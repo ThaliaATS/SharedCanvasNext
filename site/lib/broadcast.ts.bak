@@ -1,0 +1,122 @@
+import type { Message } from './types';
+
+export type MessageHandler = (message: Message) => void;
+
+const HEARTBEAT_INTERVAL = 50; // Envia heartbeat a cada 50ms
+const SESSION_TIMEOUT = 100;   // 100ms sem usuários = sessão perdida
+
+export class BroadcastSession {
+  private channel: BroadcastChannel | null = null;
+  private handlers: Set<MessageHandler> = new Set();
+  private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  private lastActivity: number = Date.now();
+  private timeoutCheck: ReturnType<typeof setInterval> | null = null;
+  public readonly roomId: string;
+  public readonly userId: string;
+  public readonly userName: string;
+  public readonly userColor: string;
+
+  constructor(
+    roomId: string,
+    userId: string,
+    userName: string,
+    userColor: string,
+  ) {
+    this.roomId = roomId;
+    this.userId = userId;
+    this.userName = userName;
+    this.userColor = userColor;
+  }
+
+  connect() {
+    if (typeof window === 'undefined') return;
+    this.channel = new BroadcastChannel(`shared-canvas-${this.roomId}`);
+    this.channel.onmessage = (event: MessageEvent<Message>) => {
+      this.lastActivity = Date.now();
+      this.handlers.forEach((handler) => handler(event.data));
+    };
+
+    // Heartbeat para manter a sessão viva
+    this.heartbeatInterval = setInterval(() => {
+      this.broadcast({
+        type: 'heartbeat',
+        userId: this.userId,
+        userName: this.userName,
+        userColor: this.userColor,
+        roomId: this.roomId,
+        timestamp: Date.now(),
+      });
+    }, HEARTBEAT_INTERVAL);
+
+    // Monitora timeout de sessão
+    this.timeoutCheck = setInterval(() => {
+      const elapsed = Date.now() - this.lastActivity;
+      if (elapsed > SESSION_TIMEOUT) {
+        console.log('[BroadcastSession] Sessão expirou por inatividade');
+      }
+    }, HEARTBEAT_INTERVAL);
+
+    // Avisa que entrou
+    this.broadcast({
+      type: 'user-join',
+      userId: this.userId,
+      userName: this.userName,
+      userColor: this.userColor,
+      roomId: this.roomId,
+      timestamp: Date.now(),
+    });
+    this.lastActivity = Date.now();
+
+    // Pede sincronização
+    this.broadcast({
+      type: 'sync-request',
+      userId: this.userId,
+      userName: this.userName,
+      userColor: this.userColor,
+      roomId: this.roomId,
+      timestamp: Date.now(),
+    });
+  }
+
+  broadcast(message: Message) {
+    if (this.channel) {
+      try {
+        this.channel.postMessage(message);
+        this.lastActivity = Date.now();
+      } catch (err) {
+        console.error('[BroadcastSession] Erro ao enviar mensagem:', err);
+      }
+    }
+  }
+
+  onMessage(handler: MessageHandler) {
+    this.handlers.add(handler);
+    return () => {
+      this.handlers.delete(handler);
+    };
+  }
+
+  disconnect() {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    if (this.timeoutCheck) {
+      clearInterval(this.timeoutCheck);
+      this.timeoutCheck = null;
+    }
+    if (this.channel) {
+      this.broadcast({
+        type: 'user-leave',
+        userId: this.userId,
+        userName: this.userName,
+        userColor: this.userColor,
+        roomId: this.roomId,
+        timestamp: Date.now(),
+      });
+      this.channel.close();
+      this.channel = null;
+    }
+    this.handlers.clear();
+  }
+}
