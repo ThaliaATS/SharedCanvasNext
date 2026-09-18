@@ -1,0 +1,2 @@
+# SharedCanvasNext
+SharedCanvas versão next
