@@ -37,9 +37,7 @@ export class NetworkSession {
   connect() {
     if (typeof window === 'undefined') return;
 
-    const peerId = this.isHost ? `sc-h-${this.roomId}` : undefined;
-    
-    this.peer = new Peer(peerId, {
+    const config = {
       debug: 0,
       config: {
         iceServers: [
@@ -47,12 +45,22 @@ export class NetworkSession {
           { urls: 'stun:global.stun.twilio.com:3478' }
         ]
       }
-    });
+    };
+
+    if (this.isHost) {
+      this.peer = new Peer(`sc-h-${this.roomId}`, config);
+    } else {
+      this.peer = new Peer(config);
+    }
 
     this.peer.on('open', (id) => {
       this.status = this.isHost ? 'host' : 'connected';
-      console.log(`[NetworkSession] Conectado como ${this.isHost ? 'HOST' : 'CLIENT'} com ID: ${id}`);
-      
+
+      console.log(
+        `[NetworkSession] Conectado como ${this.isHost ? 'HOST' : 'CLIENT'
+        } com ID: ${id}`
+      );
+
       if (!this.isHost) {
         this.connectToHost();
       }
@@ -63,18 +71,23 @@ export class NetworkSession {
         conn.close();
         return;
       }
+
       this.setupConnection(conn);
     });
 
     this.peer.on('error', (err) => {
       console.error('[NetworkSession] Erro:', err);
+
       if (err.type === 'unavailable-id' && this.isHost) {
-        console.warn('Host já existe. A sala pode já estar em uso por outro criador.');
+        console.warn(
+          'Host já existe. A sala pode já estar em uso por outro criador.'
+        );
       }
     });
 
     this.peer.on('disconnected', () => {
       this.status = 'disconnected';
+
       this.notifyHandlers({
         type: 'session-destroyed',
         userId: this.userId,
@@ -149,7 +162,7 @@ export class NetworkSession {
           }
           this.peerToAppUserId.delete(conn.peer);
         }
-        
+
         // Se não houver mais usuários conectados, destrói a sessão após 100ms
         if (this.connections.size === 0) {
           setTimeout(() => {
@@ -212,7 +225,7 @@ export class NetworkSession {
         this.users = new Map(((data.payload as any).users || []).map((u: User) => [u.id, u]));
       }
     }
-    
+
     this.notifyHandlers(data);
   }
 
@@ -268,7 +281,7 @@ export class NetworkSession {
   private destroySession() {
     if (this.status === 'destroyed') return;
     this.status = 'destroyed';
-    
+
     if (this.isHost) {
       this.broadcastToAll({
         type: 'session-destroyed',
@@ -291,7 +304,7 @@ export class NetworkSession {
 
     this.connections.forEach((conn) => conn.close());
     this.connections.clear();
-    
+
     if (this.peer) {
       this.peer.destroy();
       this.peer = null;
