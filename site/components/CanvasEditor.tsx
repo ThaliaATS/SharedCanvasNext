@@ -105,11 +105,12 @@ export default function CanvasEditor({
       setStoredUserId(storedUserId);
     }
     setUserId(storedUserId);
-    setUserColor(getRandomColor());
+    const color = getRandomColor();
+    setUserColor(color);
     if (initialName) {
       setName(initialName);
       setReady(true);
-      onReady(initialName, storedUserId, getRandomColor());
+      onReady(initialName, storedUserId, color);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialName, onReady]);
@@ -286,7 +287,14 @@ export default function CanvasEditor({
     });
   }, []);
 
+  const lastUpdateBroadcastRef = useRef<Record<string, number>>({});
+
   const broadcastObjectUpdate = useCallback((obj: CanvasObject) => {
+    const now = Date.now();
+    const last = lastUpdateBroadcastRef.current[obj.id] || 0;
+    if (now - last < 30) return; // Throttle to ~33fps
+    lastUpdateBroadcastRef.current[obj.id] = now;
+
     sessionRef.current?.broadcast({
       type: 'object-update',
       userId: sessionRef.current.userId,
@@ -328,6 +336,7 @@ export default function CanvasEditor({
       setObjects((prev) =>
         prev.map((o) => (o.id === line.id ? updated : o)),
       );
+      broadcastObjectUpdate(updated);
     } else if (
       (tool === 'rect' || tool === 'circle') &&
       isDrawingRef.current &&
@@ -336,30 +345,28 @@ export default function CanvasEditor({
     ) {
       const shape = drawingShapeRef.current;
       const start = dragStartRef.current;
+      let updated: CanvasObject = shape;
       if (tool === 'rect') {
-        const updated: CanvasObject = {
+        updated = {
           ...shape,
           x: Math.min(start.x, pointer.x),
           y: Math.min(start.y, pointer.y),
           width: Math.abs(pointer.x - start.x),
           height: Math.abs(pointer.y - start.y),
         };
-        drawingShapeRef.current = updated;
-        setObjects((prev) =>
-          prev.map((o) => (o.id === shape.id ? updated : o)),
-        );
       } else if (tool === 'circle') {
         const dx = pointer.x - start.x;
         const dy = pointer.y - start.y;
-        const updated: CanvasObject = {
+        updated = {
           ...shape,
           radius: Math.sqrt(dx * dx + dy * dy),
         };
-        drawingShapeRef.current = updated;
-        setObjects((prev) =>
-          prev.map((o) => (o.id === shape.id ? updated : o)),
-        );
       }
+      drawingShapeRef.current = updated;
+      setObjects((prev) =>
+        prev.map((o) => (o.id === shape.id ? updated : o)),
+      );
+      broadcastObjectUpdate(updated);
     }
   };
 
@@ -397,6 +404,7 @@ export default function CanvasEditor({
       };
       drawingLineRef.current = line;
       setObjects((prev) => [...prev, line]);
+      broadcastObjectAdd(line);
       return;
     }
 
@@ -421,6 +429,7 @@ export default function CanvasEditor({
       };
       drawingShapeRef.current = rect;
       setObjects((prev) => [...prev, rect]);
+      broadcastObjectAdd(rect);
       return;
     }
 
@@ -444,6 +453,7 @@ export default function CanvasEditor({
       };
       drawingShapeRef.current = circle;
       setObjects((prev) => [...prev, circle]);
+      broadcastObjectAdd(circle);
       return;
     }
   };
@@ -452,7 +462,7 @@ export default function CanvasEditor({
     if (isDrawingRef.current) {
       isDrawingRef.current = false;
       if (drawingLineRef.current) {
-        broadcastObjectAdd(drawingLineRef.current);
+        broadcastObjectUpdate(drawingLineRef.current);
         drawingLineRef.current = null;
       }
       if (drawingShapeRef.current) {
@@ -461,9 +471,10 @@ export default function CanvasEditor({
           (s.type === 'rect' && (s.width ?? 0) > 2 && (s.height ?? 0) > 2) ||
           (s.type === 'circle' && (s.radius ?? 0) > 2)
         ) {
-          broadcastObjectAdd(s);
+          broadcastObjectUpdate(s);
         } else {
           setObjects((prev) => prev.filter((o) => o.id !== s.id));
+          broadcastObjectDelete(s.id);
         }
         drawingShapeRef.current = null;
       }
@@ -471,7 +482,35 @@ export default function CanvasEditor({
     }
   };
 
+  const handleShapeDragMove = (obj: CanvasObject, e: Konva.KonvaEventObject<DragEvent>) => {
+    const node = e.target;
+    const updated: CanvasObject = {
+      ...obj,
+      x: node.x(),
+      y: node.y(),
+      rotation: node.rotation(),
+      scaleX: node.scaleX(),
+      scaleY: node.scaleY(),
+    };
+    setObjects((prev) => prev.map((o) => (o.id === obj.id ? updated : o)));
+    broadcastObjectUpdate(updated);
+  };
+
   const handleShapeDragEnd = (obj: CanvasObject, e: Konva.KonvaEventObject<DragEvent>) => {
+    const node = e.target;
+    const updated: CanvasObject = {
+      ...obj,
+      x: node.x(),
+      y: node.y(),
+      rotation: node.rotation(),
+      scaleX: node.scaleX(),
+      scaleY: node.scaleY(),
+    };
+    setObjects((prev) => prev.map((o) => (o.id === obj.id ? updated : o)));
+    broadcastObjectUpdate(updated);
+  };
+
+  const handleShapeTransform = (obj: CanvasObject, e: Konva.KonvaEventObject<Event>) => {
     const node = e.target;
     const updated: CanvasObject = {
       ...obj,
@@ -595,7 +634,9 @@ export default function CanvasEditor({
                       draggable={tool === 'select'}
                       onClick={(e) => handleShapeClick(obj, e)}
                       onTap={(e) => handleShapeClick(obj, e as unknown as Konva.KonvaEventObject<MouseEvent>)}
+                      onDragMove={(e) => handleShapeDragMove(obj, e)}
                       onDragEnd={(e) => handleShapeDragEnd(obj, e)}
+                      onTransform={(e) => handleShapeTransform(obj, e)}
                       onTransformEnd={(e) => handleShapeTransformEnd(obj, e)}
                     />
                   );
@@ -615,7 +656,9 @@ export default function CanvasEditor({
                       draggable={tool === 'select'}
                       onClick={(e) => handleShapeClick(obj, e)}
                       onTap={(e) => handleShapeClick(obj, e as unknown as Konva.KonvaEventObject<MouseEvent>)}
+                      onDragMove={(e) => handleShapeDragMove(obj, e)}
                       onDragEnd={(e) => handleShapeDragEnd(obj, e)}
+                      onTransform={(e) => handleShapeTransform(obj, e)}
                       onTransformEnd={(e) => handleShapeTransformEnd(obj, e)}
                     />
                   );

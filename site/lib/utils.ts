@@ -35,12 +35,12 @@ export function clearStoredName(): void {
 
 export function getStoredUserId(): string | null {
   if (typeof window === 'undefined') return null;
-  return localStorage.getItem(USER_ID_KEY);
+  return sessionStorage.getItem(USER_ID_KEY);
 }
 
 export function setStoredUserId(id: string): void {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(USER_ID_KEY, id);
+  sessionStorage.setItem(USER_ID_KEY, id);
 }
 
 export function generateUserId(): string {

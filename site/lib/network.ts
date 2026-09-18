@@ -9,8 +9,6 @@ export class NetworkSession {
   private connections: Map<string, DataConnection> = new Map();
   private handlers: Set<MessageHandler> = new Set();
   private status: SessionStatus = 'connecting';
-  private inactivityTimer: ReturnType<typeof setTimeout> | null = null;
-  private readonly INACTIVITY_TIMEOUT = 100; // 100ms
 
   public readonly roomId: string;
   public readonly userId: string;
@@ -20,6 +18,7 @@ export class NetworkSession {
 
   private objects: CanvasObject[] = [];
   private users: Map<string, User> = new Map();
+  private peerToAppUserId: Map<string, string> = new Map();
 
   constructor(
     roomId: string,
@@ -57,8 +56,6 @@ export class NetworkSession {
       if (!this.isHost) {
         this.connectToHost();
       }
-      
-      this.resetInactivityTimer();
     });
 
     this.peer.on('connection', (conn) => {
@@ -130,26 +127,37 @@ export class NetworkSession {
     });
 
     conn.on('data', (data: any) => {
-      this.resetInactivityTimer();
       this.handleMessage(data as Message, conn.peer);
     });
 
     conn.on('close', () => {
       this.connections.delete(conn.peer);
       if (this.isHost) {
-        const user = this.users.get(conn.peer);
-        if (user) {
-          this.users.delete(conn.peer);
-          this.broadcastToAll({
-            type: 'user-leave',
-            userId: conn.peer,
-            userName: user.name,
-            userColor: user.color,
-            roomId: this.roomId,
-            timestamp: Date.now(),
-          });
+        const appUserId = this.peerToAppUserId.get(conn.peer);
+        if (appUserId) {
+          const user = this.users.get(appUserId);
+          if (user) {
+            this.users.delete(appUserId);
+            this.broadcastToAll({
+              type: 'user-leave',
+              userId: user.id,
+              userName: user.name,
+              userColor: user.color,
+              roomId: this.roomId,
+              timestamp: Date.now(),
+            });
+          }
+          this.peerToAppUserId.delete(conn.peer);
         }
-        this.checkInactivity();
+        
+        // Se não houver mais usuários conectados, destrói a sessão após 100ms
+        if (this.connections.size === 0) {
+          setTimeout(() => {
+            if (this.connections.size === 0 && this.status !== 'destroyed') {
+              this.destroySession();
+            }
+          }, 100);
+        }
       } else {
         this.status = 'disconnected';
         this.notifyHandlers({
@@ -172,15 +180,30 @@ export class NetworkSession {
   private handleMessage(data: Message, senderId: string) {
     if (this.isHost) {
       if (data.type === 'user-join') {
-        this.users.set(senderId, {
-          id: senderId,
+        this.peerToAppUserId.set(senderId, data.userId);
+        this.users.set(data.userId, {
+          id: data.userId,
           name: data.userName,
           color: data.userColor,
           joinedAt: data.timestamp,
           cursor: { x: 0, y: 0, color: data.userColor, name: data.userName },
         });
         this.broadcastToAll(data);
-      } else if (data.type === 'cursor-move' || data.type === 'object-add' || data.type === 'object-update' || data.type === 'object-delete') {
+      } else if (data.type === 'cursor-move') {
+        this.broadcastToAll(data);
+      } else if (data.type === 'object-add') {
+        const obj = (data.payload as any).object;
+        if (!this.objects.some(o => o.id === obj.id)) {
+          this.objects = [...this.objects, obj];
+        }
+        this.broadcastToAll(data);
+      } else if (data.type === 'object-update') {
+        const obj = (data.payload as any).object;
+        this.objects = this.objects.map(o => o.id === obj.id ? obj : o);
+        this.broadcastToAll(data);
+      } else if (data.type === 'object-delete') {
+        const id = (data.payload as any).id;
+        this.objects = this.objects.filter(o => o.id !== id);
         this.broadcastToAll(data);
       }
     } else {
@@ -209,7 +232,6 @@ export class NetworkSession {
   }
 
   public broadcast(message: Message) {
-    this.resetInactivityTimer();
     if (this.isHost) {
       if (message.type === 'object-add') {
         const obj = (message.payload as any).object;
@@ -228,22 +250,6 @@ export class NetworkSession {
     this.notifyHandlers(message);
   }
 
-  private resetInactivityTimer() {
-    if (this.inactivityTimer) {
-      clearTimeout(this.inactivityTimer);
-    }
-    this.inactivityTimer = setTimeout(() => {
-      this.checkInactivity();
-    }, this.INACTIVITY_TIMEOUT);
-  }
-
-  private checkInactivity() {
-    if (this.isHost && this.connections.size === 0) {
-      console.log('[NetworkSession] Sem usuários ativos. Sessão será encerrada.');
-      this.disconnect();
-    }
-  }
-
   public onMessage(handler: MessageHandler) {
     this.handlers.add(handler);
     return () => {
@@ -256,9 +262,12 @@ export class NetworkSession {
   }
 
   public disconnect() {
-    if (this.inactivityTimer) {
-      clearTimeout(this.inactivityTimer);
-    }
+    this.destroySession();
+  }
+
+  private destroySession() {
+    if (this.status === 'destroyed') return;
+    this.status = 'destroyed';
     
     if (this.isHost) {
       this.broadcastToAll({
@@ -287,7 +296,6 @@ export class NetworkSession {
       this.peer.destroy();
       this.peer = null;
     }
-    this.status = 'destroyed';
   }
 
   public getStatus() {
